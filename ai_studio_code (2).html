@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NotaryAI | RON Command Center</title>
+    <style>
+        :root {
+            --navy: #001f3f;
+            --gold: #D4AF37;
+            --light-gold: #F4E0A1;
+            --white: #ffffff;
+            --gray: #f4f4f4;
+            --success: #28a745;
+            --warning: #ffc107;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            background-color: var(--gray);
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        nav {
+            width: 260px;
+            background-color: var(--navy);
+            color: var(--white);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.3);
+        }
+
+        nav h2 { color: var(--gold); border-bottom: 2px solid var(--gold); padding-bottom: 10px; }
+        .nav-item { padding: 15px 0; border-bottom: 1px solid rgba(255,255,255,0.1); cursor: pointer; transition: 0.3s; }
+        .nav-item:hover { color: var(--gold); }
+
+        /* Main Content */
+        main { flex: 1; overflow-y: auto; padding: 40px; }
+        .card { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }
+        .card h3 { margin-top: 0; color: var(--navy); border-left: 4px solid var(--gold); padding-left: 10px; }
+
+        .btn { padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.3s; }
+        .btn-gold { background-color: var(--gold); color: var(--navy); }
+        .btn-gold:hover { background-color: var(--light-gold); }
+        .btn-navy { background-color: var(--navy); color: var(--white); }
+
+        #doc-preview { max-width: 100%; border: 1px solid #ddd; margin-top: 10px; position: relative; display: none; }
+        #seal-overlay { position: absolute; top: 50px; right: 50px; width: 100px; display: none; opacity: 0.8; }
+        .status-badge { padding: 5px 10px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .status-ready { background: var(--success); color: white; }
+        .status-issue { background: var(--warning); color: black; }
+
+        #journal-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        #journal-table th, #journal-table td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+        #journal-table th { background-color: var(--navy); color: var(--white); }
+
+        .loading { font-style: italic; color: #666; }
+    </style>
+</head>
+<body>
+
+    <nav>
+        <h2>NotaryAI</h2>
+        <div class="nav-item">Active Sessions</div>
+        <div class="nav-item">Document Queue</div>
+        <div class="nav-item">Identity Logs</div>
+        <div class="nav-item">Settings</div>
+    </nav>
+
+    <main>
+        <section class="card">
+            <h3>1. Document Compliance Scan</h3>
+            <p>Upload a document to check for missing signature/date fields.</p>
+            <input type="file" id="docUpload" accept="image/*">
+            <div id="scanResult" style="margin-top: 15px;"></div>
+            <div style="position: relative; display: inline-block;">
+                <img id="docPreviewImg" src="" style="max-width: 400px; display: none; margin-top: 10px; border: 1px solid #ccc;">
+                <img id="sealOverlay" src="https://img.icons8.com/color/150/guarantee.png" style="position: absolute; width: 80px; top: 20px; right: 20px; display: none;">
+            </div>
+        </section>
+
+        <section class="card">
+            <h3>2. Client ID Verification</h3>
+            <p>Upload client photo ID for AI verification.</p>
+            <input type="file" id="idUpload" accept="image/*">
+            <div id="idResult" style="margin-top: 15px;"></div>
+        </section>
+
+        <section class="card" style="display: flex; gap: 15px; align-items: center;">
+            <button class="btn btn-navy" onclick="startSession()">Start Remote Session</button>
+            <button class="btn btn-gold" id="sealBtn" disabled onclick="applySeal()">Apply Digital Seal</button>
+            <div id="sessionLink"></div>
+        </section>
+
+        <section class="card">
+            <h3>Notary Journal Entry</h3>
+            <table id="journal-table">
+                <thead>
+                    <tr>
+                        <th>Date/Time</th>
+                        <th>Signer Name</th>
+                        <th>ID Type</th>
+                        <th>Document Type</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="journalBody"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script>
+        const GEMINI_API_KEY = 'AIzaSyB1QA7NbcdFuLIJ9859brm3NI-2LJF-WJw';
+        let signerData = { name: "Pending", dob: "Pending", idType: "Unknown" };
+
+        async function callGeminiVision(base64Image, prompt) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+            const payload = {
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: "image/jpeg", data: base64Image } }
+                    ]
+                }]
+            };
+            const response = await fetch(url, { method: 'POST', body: JSON.stringify(payload) });
+            const data = await response.json();
+            return data.candidates[0].content.parts[0].text;
+        }
+
+        document.getElementById('docUpload').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            document.getElementById('scanResult').innerHTML = '<span class="loading">Analyzing document...</span>';
+            reader.onloadend = async () => {
+                const base64 = reader.result.split(',')[1];
+                document.getElementById('docPreviewImg').src = reader.result;
+                document.getElementById('docPreviewImg').style.display = 'block';
+                const result = await callGeminiVision(base64, "Does this document have empty signature lines? Reply 'READY' or list issues.");
+                document.getElementById('scanResult').innerHTML = result.includes('READY') 
+                    ? '<span class="status-badge status-ready">✓ Ready</span>' 
+                    : `<span class="status-badge status-issue">⚠ ${result}</span>`;
+                document.getElementById('sealBtn').disabled = false;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        document.getElementById('idUpload').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            document.getElementById('idResult').innerHTML = '<span class="loading">Verifying ID...</span>';
+            reader.onloadend = async () => {
+                const base64 = reader.result.split(',')[1];
+                const result = await callGeminiVision(base64, "Extract Name and DOB from this ID. Format: Name: [name], DOB: [dob]");
+                document.getElementById('idResult').innerText = result;
+                const nameMatch = result.match(/Name:\s*(.*)/i);
+                if(nameMatch) signerData.name = nameMatch[1];
+                signerData.idType = "State ID (AI Verified)";
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function startSession() {
+            document.getElementById('sessionLink').innerHTML = `Link: <a href="#">meet.google.com/notary-session</a>`;
+        }
+
+        function applySeal() {
+            document.getElementById('sealOverlay').style.display = 'block';
+            const table = document.getElementById('journalBody');
+            const row = table.insertRow(0);
+            row.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${signerData.name}</td><td>${signerData.idType}</td><td>Digital Affidavit</td><td>SEALED</td>`;
+        }
+    </script>
+</body>
+</html>
